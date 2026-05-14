@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+backend/flood_forecast.db
+backend/backend.log
+.DS_Store

@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="zh">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>水文分析工具 - 汇水面积与汇流路径</title>
+    <style>
+        #nav-bar {
+            position: absolute; top: 0; left: 0; right: 0;
+            height: 48px; z-index: 1100;
+            background: rgba(10,18,36,0.92);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+            display: flex; align-items: center; padding: 0 20px; gap: 8px;
+        }
+        #nav-bar .nav-brand {
+            font-size: 15px; font-weight: 700;
+            background: linear-gradient(135deg, #60a5fa, #34d399);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+            background-clip: text; color: transparent;
+            margin-right: 16px; white-space: nowrap;
+        }
+        .nav-link {
+            display: flex; align-items: center; gap: 6px;
+            padding: 6px 14px; border-radius: 8px; font-size: 13px;
+            font-weight: 600; text-decoration: none; transition: all 0.2s;
+            color: rgba(255,255,255,0.6); border: 1px solid transparent;
+        }
+        .nav-link:hover { background: rgba(255,255,255,0.07); color: #fff; }
+        .nav-link.active {
+            background: rgba(96,165,250,0.15);
+            border-color: rgba(96,165,250,0.35); color: #60a5fa;
+        }
+        #sidebar { top: 64px !important; max-height: calc(100vh - 80px) !important; }
+        #top-meteo-bar { top: 64px !important; }
+        #meteo-sidebar { top: 64px !important; }
+        #btn-save-station {
+            display: none;
+            width: 100%; padding: 11px;
+            background: linear-gradient(135deg, #10b981, #059669);
+            color: white; border: none; border-radius: 8px;
+            font-size: 14px; font-weight: 700; cursor: pointer;
+            font-family: inherit; transition: all 0.2s;
+            box-shadow: 0 0 0 rgba(16,185,129,0);
+        }
+        #btn-save-station:hover {
+            box-shadow: 0 0 18px rgba(16,185,129,0.45);
+            transform: translateY(-1px);
+        }
+        #save-station-status {
+            display: none; margin-top: 6px;
+            padding: 6px 10px; border-radius: 6px; font-size: 12px;
+            text-align: center; font-weight: 600;
+        }
+        #save-station-status.ok {
+            background: rgba(16,185,129,0.2); color: #6ee7b7;
+            border: 1px solid rgba(16,185,129,0.3);
+        }
+        #save-station-status.err {
+            background: rgba(239,68,68,0.2); color: #fca5a5;
+            border: 1px solid rgba(239,68,68,0.3);
+        }
+    </style>
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <!-- Top Navigation Bar -->
+    <div id="nav-bar">
+        <span class="nav-brand">💧 GisPit 水文系统</span>
+        <a href="/" class="nav-link active" id="nav-analysis">🗺️ 汇水分析</a>
+        <a href="/stations.html" class="nav-link" id="nav-stations">🏗️ 预报站管理</a>
+    </div>
+    <div id="map"></div>
+
+    <div id="sidebar" class="glass-panel">
+        <div class="header">
+            <h1>水文分析</h1>
+            <p>在地图上双击目标流域出口点位，自动提取关联的汇水面积与主汇流路径</p>
+        </div>
+
+        <div class="search-box">
+            <input type="text" id="search-input" placeholder="输入地名或经纬度(例如: 39.9, 116.4)">
+            <button id="btn-search" class="btn primary">定位</button>
+        </div>
+
+        <div class="actions-top">
+            <button id="btn-analyze-network" class="btn secondary" style="width: 100%; margin-top: 8px;">提取区域水系网络
+                (延展5km)</button>
+        </div>
+
+
+
+        <div id="status" class="status-box empty">等待输入...</div>
+
+        <div id="results" class="results-panel hidden">
+            <div class="result-item">
+                <span class="label">汇水面积</span>
+                <span id="area-val" class="value">0.00 km²</span>
+            </div>
+            <div class="result-item">
+                <span class="label">DEM精度 / 数据源</span>
+                <div>
+                    <span id="dem-accuracy-val" class="value" style="margin-right: 8px; font-size: 13px;">未知</span>
+                    <span id="dem-source-val" class="value tag" style="font-size: 10px; padding: 2px 6px;">Local</span>
+                </div>
+            </div>
+
+            <div class="actions">
+                <div style="display: flex; gap: 8px;">
+                    <button id="btn-export-area" class="btn primary" style="flex: 1; padding: 8px 4px; font-size: 12px;">导出汇水区 (GeoJSON)</button>
+                    <button id="btn-export-path" class="btn secondary" style="flex: 1; padding: 8px 4px; font-size: 12px;">导出主路径 (GeoJSON)</button>
+                </div>
+                <div style="border-top: 1px dashed rgba(255,255,255,0.12); margin: 4px 0; padding-top: 8px;">
+                    <div style="font-size: 11px; color: rgba(255,255,255,0.4); margin-bottom: 6px; letter-spacing: 0.5px;">预报站管理</div>
+                    <div style="display: flex; gap: 8px; align-items: center; margin-bottom: 6px;">
+                        <label style="font-size: 12px; color: rgba(255,255,255,0.5); flex-shrink: 0;">站点名称</label>
+                        <input id="save-station-name" type="text" placeholder="请输入站点名称..."
+                            style="flex:1; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; padding: 5px 8px; color: white; font-size: 12px; font-family: inherit; outline: none;"/>
+                    </div>
+                    <button id="btn-save-station">📌 保存为预报站</button>
+                    <div id="save-station-status"></div>
+                </div>
+            </div>
+
+            <!-- Stream Order Stats Section -->
+            <div id="stream-order-section" class="hidden" style="margin-top: 8px;">
+                <div
+                    style="font-size: 12px; font-weight: 700; color: #34d399; margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px dashed rgba(255,255,255,0.15);">
+                    河道分级统计
+                </div>
+                <table id="stream-order-table" style="width: 100%; border-collapse: collapse; font-size: 11px;">
+                    <thead>
+                        <tr style="color: rgba(255,255,255,0.5);">
+                            <th style="text-align:left; padding: 3px 0; font-weight: 600;">级别</th>
+                            <th style="text-align:right; padding: 3px 4px; font-weight: 600;">总长 (km)</th>
+                            <th style="text-align:right; padding: 3px 4px; font-weight: 600;">高差 (m)</th>
+                            <th style="text-align:right; padding: 3px 4px; font-weight: 600;">平均比降 (%)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="stream-order-tbody">
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Unit Hydrograph Routing Section (Moved to Bottom) -->
+
+
+        </div>
+    </div>
+
+    <!-- Top Bar for Meteo Overview -->
+    <div id="top-meteo-bar" class="glass-panel hidden"
+        style="position: absolute; top: 16px; left: 50%; transform: translateX(-50%); z-index: 1000; display: flex; flex-direction: row; gap: 0; padding: 0; align-items: stretch; border-radius: 16px; animation: fadeInDown 0.5s ease-out; backdrop-filter: blur(16px); width: max-content; box-shadow: 0 8px 32px rgba(0,0,0,0.7); overflow: hidden; border: 1px solid rgba(255,255,255,0.1);">
+        <!-- P5 Block -->
+        <div
+            style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 14px 24px; border-right: 1px solid rgba(255,255,255,0.1); background: rgba(96,165,250,0.06);">
+            <span
+                style="font-size: 10px; letter-spacing: 1px; color: rgba(255,255,255,0.5); text-transform: uppercase; margin-bottom: 4px;">5日前期影响雨量</span>
+            <span id="top-p5-val" style="font-size: 28px; font-weight: 900; color: #60a5fa; line-height: 1;">0 mm</span>
+            <span id="top-p5-vol-val" style="font-size: 11px; font-weight: 500; color: #34d399; margin-top: 2px;">0
+                m³</span>
+        </div>
+        <!-- Forecast days Block -->
+        <div
+            style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 12px 20px;">
+            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 8px;">
+                <span
+                    style="font-size: 10px; letter-spacing: 1px; color: rgba(255,255,255,0.5); text-transform: uppercase;">未来3日降水预报</span>
+                <button id="btn-recalc-meteo"
+                    style="background: linear-gradient(135deg, rgba(245,158,11,0.3), rgba(245,158,11,0.15)); border: 1px solid rgba(245,158,11,0.5); border-radius: 6px; color: #fcd34d; font-size: 11px; font-weight: 600; padding: 2px 10px; cursor: pointer; transition: all 0.2s; letter-spacing: 0.5px;">▶
+                    重演计算</button>
+            </div>
+            <div id="top-forecast" style="display: flex; gap: 16px;"></div>
+        </div>
+    </div>
+
+    <!-- Right Sidebar for Meteo Runoff Factors -->
+    <div id="meteo-sidebar" class="glass-panel hidden"
+        style="position: absolute; right: 20px; left: auto; top: 20px; width: 340px; z-index: 1000; animation: fadeInRight 0.5s ease-out;">
+        <div class="header"
+            style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px dashed rgba(255, 255, 255, 0.2); margin-bottom: 12px; padding-bottom: 8px;">
+            <p style="margin: 0; font-size: 14px; font-weight: 700; color: #34d399;">产流系数追踪面板 (SCS)</p>
+            <button id="btn-toggle-meteo"
+                style="background: none; border: none; color: white; cursor: pointer; font-size: 18px; padding: 0 4px;">–</button>
+        </div>
+
+        <div id="meteo-content">
+            <div class="result-item">
+                <span class="label">前期影响雨量(API)</span>
+                <span id="meteo-api-val" class="value">0 mm</span>
+                <div class="formula-hint">
+                    公式: API = Σ (P_i × Kⁱ)<br>
+                    代入: <span id="eq-api"></span>
+                </div>
+            </div>
+            <div class="result-item">
+                <span class="label">前期土壤湿润程度 (AMC)</span>
+                <span id="meteo-amc-val" class="value">II (正常)</span>
+                <div class="formula-hint">
+                    判定: P₅ < 36(Ⅰ), 36~53(Ⅱ),>53(Ⅲ)<br>
+                        代入: <span id="eq-amc"></span>
+                </div>
+            </div>
+            <div class="result-item">
+                <span class="label">折减系数 K</span>
+                <span id="meteo-k-val" class="value">0.9</span>
+                <div class="formula-hint">
+                    说明: 反映流域蒸散发的经验系数值, 范围0.85~0.95
+                </div>
+            </div>
+            <div class="result-item">
+                <span class="label">SCS-CN 特征值</span>
+                <span id="meteo-cn-val" class="value cn-tag">75</span>
+                <div class="formula-hint">
+                    连续转换: 基于P₅与均准CN进行非线性插值<br>
+                    代入: <span id="eq-cn"></span>
+                </div>
+            </div>
+            <div class="result-item">
+                <span class="label">潜在最大拦蓄量 W</span>
+                <span id="meteo-s-val" class="value">0 mm</span>
+                <div class="formula-hint">
+                    公式: W = 25400 / CN - 254<br>
+                    代入: <span id="eq-s"></span>
+                </div>
+            </div>
+            <div class="result-item">
+                <span class="label">初损量 Iₐ <span style="font-size:10px;color:gray;">(λ=0.2)</span></span>
+                <span id="meteo-ia-val" class="value">0 mm</span>
+                <div class="formula-hint">
+                    公式: Iₐ = 0.2 × S<br>
+                    代入: <span id="eq-ia"></span>
+                </div>
+            </div>
+            <div class="result-item">
+                <span class="label">径流深度 R <span style="font-size:10px;color:rgba(255,255,255,0.4);">设计暴雨: <span
+                            id="meteo-pdesign-label" style="color:#fcd34d;">--</span></span></span>
+                <span id="meteo-qs-val" class="value" style="color:#60a5fa; font-weight:700;">0 mm</span>
+                <div class="formula-hint">
+                    公式: R = (P - Iₐ)² / (P - Iₐ + S)<br>
+                    代入: <span id="eq-qs"></span>
+                </div>
+            </div>
+            <div class="result-item" style="border: none;">
+                <span class="label">径流系数 <i>α</i> <span style="font-size:10px;color:rgba(255,255,255,0.5);">(基于预报 <span
+                            id="meteo-pdesign1-val">0</span>mm)</span></span>
+                <span id="meteo-f-val" class="value" style="color:#60a5fa; font-weight:700;">0.00</span>
+                <div class="formula-hint">
+                    公式: α = Qₛ / P<br>
+                    代入: <span id="eq-f"></span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bottom Panel for Hydrograph Routing -->
+    <div id="hydro-panel" class="glass-panel hidden"
+        style="position: absolute; bottom: 20px; top: auto; left: 390px; right: auto; width: calc(100vw - 760px); min-width: 480px; max-width: 700px; height: 180px; display: flex; flex-direction: row; gap: 16px; padding: 12px 16px; z-index: 1000; animation: fadeInUp 0.5s ease-out; align-items: stretch; backdrop-filter: blur(12px);">
+        <!-- Left side metrics -->
+        <div
+            style="flex: 0 0 220px; display: flex; flex-direction: column; border-right: 1px dashed rgba(255,255,255,0.2); padding-right: 16px; overflow-y: auto; overflow-x: hidden;">
+            <p style="margin: 0 0 8px 0; font-size: 12px; font-weight: 700; color: #f59e0b;">汇流演进及河道水深 (极值)</p>
+            <div id="hydro-content" style="display: flex; flex-direction: column; gap: 2px;">
+                <div class="result-item" style="padding:4px 0;">
+                    <span class="label" style="font-size:11px;">主沟道地形长 L</span>
+                    <span id="hydro-l-val" class="value">0.0 km</span>
+                    <div class="formula-hint">公式: L = 1.4 × A^0.6<br>代入: <span id="eq-l"></span></div>
+                </div>
+                <div class="result-item" style="padding:4px 0;">
+                    <span class="label" style="font-size:11px;">汇流时间 T_c</span>
+                    <span id="hydro-tc-val" class="value">0.0 h</span>
+                    <div class="formula-hint">公式: Kirpich 经验律<br>代入: <span id="eq-tc"></span></div>
+                </div>
+                <div class="result-item" style="padding:4px 0;">
+                    <span class="label" style="font-size:11px;">极大洪峰 Q_p</span>
+                    <span id="hydro-qp-val" class="value" style="color:#60a5fa; font-weight:700;">0.0 m³/s</span>
+                    <div class="formula-hint">公式: Q_p = 0.208 A × Qₛ / T_p<br>代入: <span id="eq-qp"></span></div>
+                </div>
+                <div class="result-item" style="border: none; padding-bottom: 0; padding-top:2px;">
+                    <span class="label" style="font-size:11px;">最高假定断面漫泛深</span>
+                    <span id="hydro-stage-val" class="value"
+                        style="color:#ef4444; font-size: 16px; font-weight:800;">0.00 m</span>
+                    <div class="formula-hint">公式: y = (Qn / (W√S))^0.6<br>代入: <span id="eq-depth"></span></div>
+                </div>
+                
+                <div style="margin-top: 4px; padding-top: 4px; border-top: 1px dashed rgba(255,255,255,0.1); font-size: 9px; color: rgba(255,255,255,0.5); line-height: 1.3;">
+                    <strong style="color: #93c5fd;">SCS 单位线拟合:</strong> 
+                    <span style="font-family: monospace;">T_b=2.67T_p</span><br>
+                    <span style="font-family: monospace;">t≤T_p: q = Q_p(t/T_p)</span><br>
+                    <span style="font-family: monospace;">t>T_p: q = Q_p(1-(t-T_p)/(1.67T_p))</span>
+                </div>
+            </div>
+        </div>
+        <!-- Right side chart -->
+        <div
+            style="flex: 1; height: 100%; position: relative; display: flex; align-items: center; justify-content: center; min-height: 140px;">
+            <canvas id="hydrograph-chart" style="width: 100%; height: 100%;"></canvas>
+        </div>
+    </div>
+
+
+    <!-- Loading Overlay -->
+    <div id="loader" class="loader-overlay hidden">
+        <div class="spinner"></div>
+        <p>正在分析地形并提取汇水面积...</p>
+    </div>
+
+    <!-- Chart JS -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+    <!-- App Logic -->
+    <script src="app.js?v=20260504b"></script>
+</body>
+
+</html>
